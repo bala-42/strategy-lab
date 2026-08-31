@@ -1,0 +1,16 @@
+# Pinned to the versions this repo was built and tested against.
+# Install with: pip install -r requirements.txt
+numpy==2.4.4
+pandas==3.0.2
+scipy==1.17.1
+matplotlib==3.10.8
+statsmodels==0.15.0
+
+# Running and executing the notebooks
+jupyter==1.1.1
+ipykernel==7.3.0
+nbconvert==7.17.1
+nbformat==5.11.1
+
+# Running the test suite (tests/)
+pytest==9.1.1
