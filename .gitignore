@@ -1,4 +1,13 @@
-data/*.csv
+# Downloaded market data. Deny the whole tree, then name the exceptions.
+#
+# This was `data/*.csv`, which covers exactly what download_data.py writes
+# today and nothing else: a subdirectory, a .parquet cache, a .json dump or a
+# .xlsx would all have been staged by `git add -A` without a word. Nothing had
+# slipped through - but the fix is one line and the failure is a 59 MB commit
+# nobody meant to make.
+data/**
+!data/**/.gitkeep
+!data/**/README.md
 .ipynb_checkpoints/
 __pycache__/
 *.pyc
