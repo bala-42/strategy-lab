@@ -55,3 +55,62 @@ def test_sharpe_ci_wraps_perf_stats():
     result = sharpe_ci(r, freq=12, n_boot=300, seed=2)
     point_sharpe = perf_stats(r, freq=12)["sharpe"]
     assert result["point_estimate"] == pytest.approx(point_sharpe, rel=1e-9)
+
+
+def test_perf_stats_records_which_sharpe_convention_it_used():
+    r = pd.Series(np.random.default_rng(3).normal(0.01, 0.04, 120))
+    assert perf_stats(r, freq=12)["sharpe_convention"] == "arithmetic"
+    assert perf_stats(r, freq=12, sharpe_convention="geometric")["sharpe_convention"] == "geometric"
+
+
+def test_perf_stats_rejects_an_unknown_convention():
+    r = pd.Series([0.01] * 20)
+    with pytest.raises(ValueError, match="sharpe_convention"):
+        perf_stats(r, freq=12, sharpe_convention="harmonic")
+
+
+def test_geometric_sharpe_explodes_on_a_short_window_with_a_huge_move():
+    """Why arithmetic is the default.
+
+    The geometric convention raises the window's cumulative return to the
+    power freq/len(r). A 180-day fold that returned ~44x -- which early BTC
+    genuinely did -- annualizes to a "Sharpe" in the thousands. The number is
+    arithmetically correct and completely unusable, and it sat in a committed
+    walk-forward table reading 116.9 before the annualization frequency was
+    also fixed.
+    """
+    rng = np.random.default_rng(7)
+    # ~2.1% a day for 180 days compounds to roughly 44x.
+    r = pd.Series(0.021 + rng.normal(0, 0.05, 180))
+
+    geometric = perf_stats(r, freq=365, sharpe_convention="geometric")
+    arithmetic = perf_stats(r, freq=365, sharpe_convention="arithmetic")
+
+    # The claim is the relationship, not a magic threshold: the geometric
+    # convention lands an order of magnitude away, in a range no reader can
+    # use, while the arithmetic one stays interpretable.
+    assert geometric["sharpe"] > 10 * arithmetic["sharpe"]
+    assert geometric["sharpe"] > 50, "the fixture no longer reproduces the blow-up"
+    assert 0 < arithmetic["sharpe"] < 20
+    # Same underlying data, same annualized return -- only the ratio differs.
+    assert geometric["ann_return"] == arithmetic["ann_return"]
+
+
+def test_the_two_conventions_agree_closely_on_an_ordinary_sample():
+    """Arithmetic is not simply a different number everywhere.
+
+    On a long sample with modest returns the two are close, which is why the
+    geometric one survived unnoticed for so long.
+    """
+    r = pd.Series(np.random.default_rng(11).normal(0.0004, 0.01, 2000))
+    geometric = perf_stats(r, freq=252, sharpe_convention="geometric")["sharpe"]
+    arithmetic = perf_stats(r, freq=252, sharpe_convention="arithmetic")["sharpe"]
+    assert abs(geometric - arithmetic) / abs(arithmetic) < 0.10
+
+
+def test_sharpe_ci_uses_the_same_convention_as_its_point_estimate():
+    r = pd.Series(np.random.default_rng(5).normal(0.01, 0.05, 200))
+    for convention in ("arithmetic", "geometric"):
+        point = perf_stats(r, freq=252, sharpe_convention=convention)["sharpe"]
+        ci = sharpe_ci(r, freq=252, sharpe_convention=convention, n_boot=200, seed=1)
+        assert ci["ci_low"] <= point <= ci["ci_high"]

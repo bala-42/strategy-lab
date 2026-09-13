@@ -16,11 +16,11 @@ class into a practical decision guide.
 
 | # | Strategy | Verdict | Strongest evidence |
 |---|---|---|---|
-| 1 | [Trend-following](./01_trend_following) | Real edge on BTC specifically | 90% CI [0.53, 2.48]; broad parameter plateau |
-| 2 | [Mean-reversion](./02_mean_reversion) | Real edge on KO specifically | 90% CI [0.15, 1.34]; near-total loss on BTC (mirror image of #1) |
+| 1 | [Trend-following](./01_trend_following) | Real edge on BTC specifically | 90% CI [0.87, 1.74]; broad parameter plateau |
+| 2 | [Mean-reversion](./02_mean_reversion) | Real edge on KO specifically | 90% CI [0.21, 1.30]; near-total loss on BTC (mirror image of #1) |
 | 3 | [Cross-sectional momentum](./03_cross_sectional_momentum) | Real signal, fragile calibration | Monotonic decile spread confirmed; lookback sensitivity is a genuine concern |
 | 4 | [Pairs trading](./04_pairs_trading) (XRP/DOGE) | Works, but on a knife-edge | Only one of five tested windows is positive, despite genuinely strong cointegration |
-| 5 | [Volatility breakout](./05_volatility_breakout) | No aggregate edge found | CI spans zero; 35.5% walk-forward win rate — reported honestly as a negative result |
+| 5 | [Volatility breakout](./05_volatility_breakout) | No aggregate edge found | CI spans zero; 41.9% walk-forward win rate — reported honestly as a negative result |
 | 6 | [Seasonality](./06_seasonality) (BTC day-of-week) | Interesting but unproven | CI excludes zero and 71% walk-forward consistency — but drawn from 6 tested combinations |
 
 ## The core finding
@@ -105,6 +105,32 @@ dates packed into one bucket on no evidence, whose returns
 `regime_conditional_returns` then reported as if the regime had been
 observed. The regime is now NaN until both inputs exist, and the frame
 carries a `regime_known` column.
+
+**A Sharpe ratio whose definition was never stated.** `perf_stats` computed
+Sharpe as a *geometric* annualized return over an *arithmetic* annualized
+volatility. That is a real statistic — compound growth per unit of volatility —
+but it is not what a reader comparing against a published Sharpe assumes, and
+it was documented nowhere.
+
+On a long sample the two conventions agree closely, which is how it went
+unnoticed. On a short window with a large move they do not: the geometric
+convention raises the window's cumulative return to the power `freq / len(r)`,
+so a 180-day walk-forward fold over early-2011 BTC that returned **43.8x**
+came out with an annualized return of 212,796% and a "Sharpe" of **1046**.
+Arithmetically correct; entirely unusable. `perf_stats` now takes an explicit
+`sharpe_convention`, defaults to `arithmetic`, and records which one produced
+each number. `sharpe_ci` takes the same argument, so an interval and the point
+estimate it surrounds cannot be computed two different ways.
+
+The two conventions also disagree on the *sign* of some folds, so the
+walk-forward win rates moved: volatility breakout from 35.5% to 41.9%, and
+trend-following from 61.3% to 74.2%. **Every verdict in the table above
+survives unchanged** — each confidence interval that excluded zero still
+excludes it, and the one that spanned zero still spans it. The intervals
+themselves tightened (trend-following from [0.53, 2.48] to [0.87, 1.74],
+mean-reversion from [0.15, 1.34] to [0.21, 1.30]), because the arithmetic
+Sharpe is less sensitive to the handful of extreme folds that dominated the
+geometric one.
 
 **A parameter sweep that swallowed its own failures.** `parameter_sensitivity`
 turned every exception into NaN and returned a clean-looking grid. A

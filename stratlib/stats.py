@@ -6,6 +6,12 @@ return, annualized vol, Sharpe, max drawdown, hit rate) computed from a
 return
 series. Previously each notebook had its own copy of this function; now
 there's exactly one, and it's tested.
+
+`perf_stats` reports which Sharpe convention it used. It used to apply a
+geometric annualized return over an arithmetic annualized volatility without
+saying so, which is defensible on a long sample and produces absurdities on a
+short one -- a 180-day fold that returned 43.8x came out with a "Sharpe" of
+1046. See the docstring for the comparison.
 """
 from __future__ import annotations
 
@@ -23,33 +29,83 @@ def max_drawdown(returns: pd.Series) -> float:
     return float(drawdown.min())
 
 
-def perf_stats(returns: pd.Series, freq: int, rf: float = 0.0, name: str | None = None) -> dict:
+SHARPE_CONVENTIONS = ("arithmetic", "geometric")
+
+
+def perf_stats(returns: pd.Series, freq: int, rf: float = 0.0, name: str | None = None,
+                 sharpe_convention: str = "arithmetic") -> dict:
     """
     Compute standard performance statistics from a periodic return series.
 
+    Two Sharpe conventions are available and the result records which one it
+    used, because they are not interchangeable:
+
+    ``arithmetic`` (default)
+        ``(mean(r) - rf/freq) * freq / (std(r) * sqrt(freq))``. The textbook
+        definition, and the one a reader comparing against a published Sharpe
+        assumes.
+
+    ``geometric``
+        ``(compound annualized return - rf) / annualized vol``. A real
+        statistic answering a different question -- compound growth per unit
+        of volatility -- and the convention this function used to apply
+        without saying so.
+
+    The difference is not cosmetic on short windows with large moves, because
+    the compound annualization raises the fold's cumulative return to the
+    power ``freq / len(r)``. A 180-day walk-forward fold over early BTC that
+    returned 43.8x annualizes to 212,796% and a "Sharpe" of 1046 under the
+    geometric convention, against 4.75 under the arithmetic one. The first
+    number is arithmetically correct and useless; extrapolating half a year
+    of a 43x move out to a full year is not a measurement anyone can act on.
+
+    The two also disagree on *sign* for some folds, so a win rate computed as
+    ``(sharpe > 0).mean()`` depends on the convention -- which is exactly why
+    it is now recorded rather than assumed.
+
     Parameters
     ----------
-    returns : pd.Series of periodic (not cumulative) returns
-    freq    : periods per year used for annualization (12=monthly, 252=daily
-              trading, 365=daily calendar/crypto)
-    rf      : annualized risk-free rate, used in the Sharpe ratio
-    name    : optional label, included in the returned dict as "name"
+    returns           : pd.Series of periodic (not cumulative) returns
+    freq              : periods per year used for annualization (12=monthly,
+                        252=daily trading, 365=daily calendar/crypto)
+    rf                : annualized risk-free rate, used in the Sharpe ratio
+    name              : optional label, included in the result as "name"
+    sharpe_convention : "arithmetic" (default) or "geometric"
 
     Returns
     -------
-    dict with ann_return, ann_vol, sharpe, max_drawdown, hit_rate
+    dict with ann_return, ann_vol, sharpe, sharpe_convention, max_drawdown,
+    hit_rate. `ann_return` remains the compound annualized return under both
+    conventions -- it is what an investor actually experiences, and only the
+    Sharpe definition changes.
     """
+    if sharpe_convention not in SHARPE_CONVENTIONS:
+        raise ValueError(
+            f"sharpe_convention must be one of {SHARPE_CONVENTIONS}, "
+            f"got {sharpe_convention!r}"
+        )
+
     r = returns.dropna()
     if len(r) == 0:
         raise ValueError("perf_stats received an empty return series")
 
     ann_return = (1 + r).prod() ** (freq / len(r)) - 1
     ann_vol = r.std() * np.sqrt(freq)
-    sharpe = (ann_return - rf) / ann_vol if ann_vol > 0 else np.nan
+
+    if ann_vol > 0:
+        if sharpe_convention == "arithmetic":
+            excess = r - rf / freq
+            sharpe = excess.mean() * freq / (excess.std() * np.sqrt(freq))
+        else:
+            sharpe = (ann_return - rf) / ann_vol
+    else:
+        sharpe = np.nan
+
     result = {
         "ann_return": ann_return,
         "ann_vol": ann_vol,
-        "sharpe": sharpe,
+        "sharpe": float(sharpe),
+        "sharpe_convention": sharpe_convention,
         "max_drawdown": max_drawdown(r),
         "hit_rate": float((r > 0).mean()),
     }
@@ -126,8 +182,14 @@ def bootstrap_ci(
     }
 
 
-def sharpe_ci(returns: pd.Series, freq: int, rf: float = 0.0, **kwargs) -> dict:
-    """Convenience wrapper: bootstrap CI specifically for the Sharpe ratio."""
+def sharpe_ci(returns: pd.Series, freq: int, rf: float = 0.0,
+                sharpe_convention: str = "arithmetic", **kwargs) -> dict:
+    """Convenience wrapper: bootstrap CI specifically for the Sharpe ratio.
+
+    Takes the same `sharpe_convention` as `perf_stats`, so an interval and the
+    point estimate it surrounds cannot end up computed two different ways.
+    """
     def _sharpe(r):
-        return perf_stats(r, freq=freq, rf=rf)["sharpe"]
+        return perf_stats(r, freq=freq, rf=rf,
+                          sharpe_convention=sharpe_convention)["sharpe"]
     return bootstrap_ci(returns, _sharpe, **kwargs)

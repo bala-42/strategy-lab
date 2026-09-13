@@ -143,7 +143,13 @@ def walk_forward_validation(price: pd.Series, strategy_fn, backtest_fn, params: 
     Returns
     -------
     DataFrame with one row per fold: fold_start, fold_end, sharpe,
-    ann_return, max_drawdown, n_obs.
+    fold_return, ann_return, max_drawdown, n_obs.
+
+    `fold_return` is what the fold actually returned; `ann_return` is that
+    extrapolated to a year. On short windows the second is the one to
+    distrust. Note also that a fold can show a positive arithmetic Sharpe
+    and a negative cumulative return -- mean(r) > 0 while the compounding is
+    negative is volatility drag, not an inconsistency.
     """
     if step is None:
         step = test_window
@@ -185,7 +191,13 @@ def walk_forward_validation(price: pd.Series, strategy_fn, backtest_fn, params: 
             continue
         rows.append({
             "fold_start": fold_idx[0], "fold_end": fold_idx[-1],
-            "sharpe": stats["sharpe"], "ann_return": stats["ann_return"],
+            "sharpe": stats["sharpe"],
+            # The fold's actual cumulative return, not extrapolated. Prefer it
+            # over `ann_return` when the window is short: annualizing a
+            # 180-day fold that returned 43.8x gives 212,796%, which is
+            # arithmetically correct and describes a year that did not happen.
+            "fold_return": float((1 + fold_ret).prod() - 1),
+            "ann_return": stats["ann_return"],
             "max_drawdown": stats["max_drawdown"], "n_obs": len(fold_ret),
         })
         start += step

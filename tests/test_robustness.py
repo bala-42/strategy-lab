@@ -142,3 +142,25 @@ def test_walk_forward_validation_folds_are_sequential_and_non_overlapping():
     starts = result["fold_start"].tolist()
     assert starts == sorted(starts)
     assert len(set(starts)) == len(starts)
+
+
+def test_walk_forward_reports_the_fold_return_not_only_its_extrapolation():
+    """Annualizing a short fold with a large move is not a measurement.
+
+    A 180-day fold over early-2011 BTC returned ~44x; extrapolated to a year
+    that is 212,796%, which describes a year that did not happen. The fold's
+    own cumulative return is a fact, so it is reported alongside.
+    """
+    price = _trending_series(n=500)
+    bt = partial(single_asset_backtest, cost_bps=5.0, freq=252)
+    wf = walk_forward_validation(
+        price, trend_following_signal, bt,
+        params={"lookback": 60}, train_window=100, test_window=50,
+    )
+    assert "fold_return" in wf.columns
+    # Over a 50-day fold at freq=252, annualizing magnifies: the extrapolated
+    # figure should be the larger of the two in absolute terms for a winner.
+    winners = wf[wf["fold_return"] > 0]
+    assert len(winners), "the fixture produced no profitable fold"
+    assert (winners["ann_return"].abs() >= winners["fold_return"].abs()).all()
+    assert np.isfinite(wf["fold_return"]).all()
