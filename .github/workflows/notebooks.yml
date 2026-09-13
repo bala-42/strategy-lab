@@ -1,0 +1,107 @@
+name: notebooks
+
+# Not on every push. This job downloads ~59 MB from four third-party GitHub
+# repositories and executes every notebook end to end, so it is slow and its
+# failures are as likely to be someone else's raw.githubusercontent.com as
+# they are to be this repo's code.
+#
+# It exists because the library and the notebooks drift apart silently: a
+# correct fix to stratlib does not change a committed .ipynb, so the rendered
+# output on GitHub can contradict the code that produced it for months. That
+# is exactly what happened with the hardcoded annualization frequency.
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays, 04:00 UTC.
+    - cron: "0 4 * * 1"
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Download public datasets
+        run: python download_data.py
+
+      # --to notebook without --inplace: the executed copies go to a temp
+      # directory and are never written back, so this job cannot quietly
+      # rewrite committed output. It only answers "does this still run".
+      - name: Execute every notebook
+        run: |
+          mkdir -p /tmp/executed
+          failed=0
+          for nb in */*.ipynb; do
+            echo "::group::$nb"
+            if (cd "$(dirname "$nb")" && python -m jupyter nbconvert \
+                  --to notebook --execute \
+                  --ExecutePreprocessor.timeout=900 \
+                  --output-dir /tmp/executed \
+                  "$(basename "$nb")"); then
+              echo "ok"
+            else
+              echo "::error file=$nb::notebook failed to execute"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $failed
+
+      - name: Report cells whose output would change
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, pathlib, re
+
+          # Run-to-run noise that is not drift. Without these every notebook
+          # that emits a single warning reports as changed on every run, and a
+          # check that always fires is a check nobody reads.
+          NOISE = [
+              (re.compile(r"ipykernel_\d+"), "ipykernel_N"),
+              (re.compile(r"^/\S*?/tmp/", re.M), "/tmp/"),
+              (re.compile(r"0x[0-9a-fA-F]{6,}"), "0xADDR"),
+              (re.compile(r"\d+\.\d+ ?s\b"), "Ns"),
+          ]
+
+          def texts(p):
+              doc = json.loads(p.read_text())
+              out = []
+              for cell in doc.get("cells", []):
+                  for o in cell.get("outputs", []):
+                      if o.get("output_type") != "stream":
+                          continue
+                      text = "".join(o.get("text", []))
+                      for pattern, repl in NOISE:
+                          text = pattern.sub(repl, text)
+                      out.append(text)
+              return out
+
+          drift = []
+          for src in sorted(pathlib.Path(".").glob("*/*.ipynb")):
+              out = pathlib.Path("/tmp/executed") / src.name
+              if not out.exists():
+                  continue
+              if texts(src) != texts(out):
+                  drift.append(str(src))
+          if drift:
+              print("These notebooks would print different output if re-run:")
+              for d in drift:
+                  print(" -", d)
+              print()
+              print("Not a failure on its own - a notebook can legitimately lag "
+                    "a library change. Re-execute and commit when it does.")
+          else:
+              print("Every notebook's committed output matches a fresh run.")
+          PY

@@ -1,0 +1,69 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The pinned dependencies require >=3.11 and publish wheels through
+        # 3.14. Testing the ends of the supported range, not just the one
+        # version that happens to be on the author's machine.
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # Deliberately the documented path from the README, not a hand-picked
+      # subset. If `pip install -r requirements.txt` stops working, the
+      # reproduction instructions are broken and that is worth failing on.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # No network and no data/ needed: every fixture in tests/ is synthetic.
+      - name: Run tests
+        run: python -m pytest tests/ -v
+
+  notebook-outputs:
+    # Cheap, no dependencies: parse the committed .ipynb files and refuse a
+    # traceback. A notebook whose outputs were saved from a failing run looks
+    # fine on GitHub until someone scrolls to the cell that died.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: No committed cell errors
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          bad = []
+          for nb in sorted(pathlib.Path(".").glob("*/*.ipynb")):
+              doc = json.loads(nb.read_text())
+              for i, cell in enumerate(doc.get("cells", [])):
+                  for out in cell.get("outputs", []):
+                      if out.get("output_type") == "error":
+                          bad.append(f"{nb} cell {i}: {out.get('ename')}: {out.get('evalue')}")
+          if bad:
+              print("Committed notebooks contain error outputs:")
+              for line in bad:
+                  print(" -", line)
+              sys.exit(1)
+          print("No error outputs in any committed notebook.")
+          PY
