@@ -86,3 +86,45 @@ def test_regime_conditional_returns_respects_freq_argument():
     # the daily interpretation should be dramatically larger -- confirming the
     # two calls actually used different exponents, not the same hardcoded one
     assert daily.loc["X", "ann_return"] > monthly.loc["X", "ann_return"] * 50
+
+
+def test_classify_regime_leaves_its_warm_up_unlabelled():
+    """Regression test: `NaN >= threshold` is False, not NaN.
+
+    An unguarded comparison reports "not trending" and "not high vol"
+    throughout the warm-up, so every early date came out labelled
+    "Ranging-LowVol" -- a label that was the absence of a measurement
+    rather than a measurement. Left in, it packs the opening stretch of
+    every series into one bucket, and regime_conditional_returns then
+    reports that bucket's performance as if the regime had been observed.
+    """
+    price = _strong_trend(n=400)
+    result = classify_regime(price, trend_window=60, vol_window=20)
+
+    unmeasured = result["trend_strength"].isna() | result["vol_percentile"].isna()
+    assert unmeasured.any(), "the fixture is too long to have a warm-up"
+    assert result.loc[unmeasured, "regime"].isna().all()
+    assert not result.loc[unmeasured, "regime_known"].any()
+
+    # And the labels that remain are all backed by both measurements.
+    labelled = result["regime"].notna()
+    assert result.loc[labelled, "trend_strength"].notna().all()
+    assert result.loc[labelled, "vol_percentile"].notna().all()
+    assert labelled.any(), "everything was discarded, which is the other failure"
+
+
+def test_classify_regime_distinguishes_not_trending_from_not_yet_measurable():
+    price = _strong_trend(n=400)
+    result = classify_regime(price, trend_window=60, vol_window=20)
+    warm_up = result["trend_strength"].isna()
+    assert result.loc[warm_up, "is_trending"].isna().all()
+    assert result.loc[~warm_up, "is_trending"].notna().all()
+
+
+def test_regime_conditional_returns_ignores_the_unlabelled_warm_up():
+    """The consequence of the fix, at the place it mattered."""
+    price = _strong_trend(n=400)
+    result = classify_regime(price, trend_window=60, vol_window=20)
+    returns = price.pct_change()
+    buckets = regime_conditional_returns(returns, result["regime"].shift(1), freq=252)
+    assert buckets["n_obs"].sum() <= int(result["regime_known"].sum())

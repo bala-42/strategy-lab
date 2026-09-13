@@ -56,31 +56,64 @@ def classify_regime(price: pd.Series, trend_window: int = 60, vol_window: int = 
     specific asset normally is, not an absolute cutoff that would mean
     something different for BTC than for a utility stock).
 
+    Both inputs need a warm-up before they mean anything: `trend_strength`
+    needs `trend_window` observations and `vol_percentile` needs 60 of
+    `vol`, which itself needs `vol_window`. Until both exist the regime is
+    **NaN**, not a label.
+
+    That distinction is load-bearing. `NaN >= threshold` is `False` in
+    pandas, not NaN -- so an unguarded comparison silently reports "not
+    trending" and "not high vol" throughout the warm-up, and every one of
+    those dates comes out labelled "Ranging-LowVol". The label is not a
+    measurement; it is the absence of one. Left in, it packs the opening
+    stretch of every series into a single bucket, and
+    `regime_conditional_returns` then reports that bucket's performance as
+    if the regime had been observed.
+
     Returns
     -------
     DataFrame indexed like `price` with columns:
-        trend_strength, is_trending, vol, vol_percentile, is_high_vol, regime
-    where regime is one of:
+        trend_strength, is_trending, vol, vol_percentile, is_high_vol,
+        regime_known, regime
+    where regime is NaN during the warm-up and otherwise one of:
         "Trending-HighVol", "Trending-LowVol", "Ranging-HighVol", "Ranging-LowVol"
+
+    `is_trending` and `is_high_vol` are nullable booleans, pd.NA wherever
+    the underlying measurement does not exist yet, so `.isna()` separates
+    "measured, and not trending" from "not measurable yet". Note that
+    pandas still treats pd.NA as False when such a Series is used directly
+    as a boolean mask -- it does not raise -- so filter on `regime_known`
+    rather than relying on the mask to object.
     """
     ts = trend_strength(price, window=trend_window)
-    is_trending = ts >= trend_threshold
 
     vol = volatility_level(price, window=vol_window)
     vol_percentile = vol.rolling(vol_lookback, min_periods=60).apply(
         lambda x: (x[-1] <= x).mean(), raw=True
     )
-    is_high_vol = vol_percentile >= 0.5
+
+    # Both halves must be measurable before the pair can be labelled.
+    regime_known = ts.notna() & vol_percentile.notna()
+
+    is_trending = (ts >= trend_threshold).astype("boolean").where(ts.notna())
+    is_high_vol = (vol_percentile >= 0.5).astype("boolean").where(
+        vol_percentile.notna()
+    )
+
+    trending = is_trending.fillna(False).astype(bool)
+    high_vol = is_high_vol.fillna(False).astype(bool)
 
     regime = pd.Series(np.nan, index=price.index, dtype=object)
-    regime[is_trending & is_high_vol] = "Trending-HighVol"
-    regime[is_trending & ~is_high_vol] = "Trending-LowVol"
-    regime[~is_trending & is_high_vol] = "Ranging-HighVol"
-    regime[~is_trending & ~is_high_vol] = "Ranging-LowVol"
+    regime[trending & high_vol] = "Trending-HighVol"
+    regime[trending & ~high_vol] = "Trending-LowVol"
+    regime[~trending & high_vol] = "Ranging-HighVol"
+    regime[~trending & ~high_vol] = "Ranging-LowVol"
+    regime[~regime_known] = np.nan
 
     return pd.DataFrame({
         "trend_strength": ts, "is_trending": is_trending,
         "vol": vol, "vol_percentile": vol_percentile, "is_high_vol": is_high_vol,
+        "regime_known": regime_known,
         "regime": regime,
     })
 

@@ -71,12 +71,48 @@ strategy-lab/
 └── 07_synthesis/          # the decision-matrix capstone
 ```
 
-One real bug was caught by the test suite during development: an early
-version of `regime_conditional_returns` hardcoded a daily (252) return
-frequency regardless of the data actually passed in, which silently
-produced nonsensical annualized figures when fed monthly cross-sectional
-momentum returns. A regression test (`test_regime_conditional_returns_respects_freq_argument`)
-now checks this directly.
+## Bugs the suite has caught
+
+**Hardcoded annualization frequency, twice.** An early version of
+`regime_conditional_returns` hardcoded a daily (252) return frequency
+regardless of the data passed in, which silently produced nonsensical
+annualized figures when fed monthly cross-sectional momentum returns.
+`test_regime_conditional_returns_respects_freq_argument` checks this
+directly.
+
+The same bug was then found one module over, still live:
+`walk_forward_validation` computed every fold's statistics at `freq=252`
+while three of its four callers pass BTC and bind `freq=365` to the
+backtest. Each fold's Sharpe and annualized return was understated by
+about sqrt(252/365) — roughly 17%. The frequency is now taken from the
+`freq` already bound to `backtest_fn`, or passed explicitly, and raises
+rather than defaulting if it can be neither.
+
+The figures quoted in the table above are unaffected: the walk-forward
+win rates are `(sharpe > 0).mean()`, and the *sign* of a Sharpe does not
+depend on the annualization factor. The confidence intervals come from
+`sharpe_ci`, which has always taken `freq` explicitly and is passed the
+right value at every call site. What was wrong is the per-fold Sharpe and
+`ann_return` columns displayed inside the notebooks — understated, never
+inflated. Re-running the affected notebooks will move those numbers up.
+
+**A regime label that was the absence of a measurement.** `classify_regime`
+compared `trend_strength >= threshold` without guarding for the warm-up
+period. `NaN >= threshold` is `False` in pandas, not NaN, so every date
+before the rolling windows filled reported "not trending, not high vol"
+and came out labelled `Ranging-LowVol`. On a 900-day series that is 79
+dates packed into one bucket on no evidence, whose returns
+`regime_conditional_returns` then reported as if the regime had been
+observed. The regime is now NaN until both inputs exist, and the frame
+carries a `regime_known` column.
+
+**A parameter sweep that swallowed its own failures.** `parameter_sensitivity`
+turned every exception into NaN and returned a clean-looking grid. A
+failed combination and a combination that lost money were indistinguishable
+in the output, and a sweep in which *every* combination failed rendered as
+a blank heatmap that reads as "no edge". Failures now keep their reason in
+an `error` column and raise a warning; a sweep where nothing produced a
+usable metric raises.
 
 ## Reproducing locally
 
